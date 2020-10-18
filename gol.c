@@ -1,9 +1,4 @@
-/* -*- mode: c; c-basic-offset: 2; indent-tabs-mode: nil; -*-
- *
- * Using the C-API of this library.
- *
- */
-#include "led-matrix-c.h"
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,107 +7,56 @@
 #include <unistd.h>
 #include <sys/time.h>
 #include <signal.h>
-
+#include <stdbool.h>
+#include "led-matrix-c.h"
 
 #define PANEL_W 64
 #define PANEL_H 64
-#define PANEL_DIV 1
 
-#define WIDTH  (PANEL_W/PANEL_DIV)
-#define HEIGHT (PANEL_H/PANEL_DIV)
-#define TOTAL_UNITS (WIDTH * HEIGHT)
 #define RAND_MOD 3
-#define REFRESH_RATE 8
-#define SLEEP_MS ((long)(1.0/REFRESH_RATE*1000.0))
-#define CHECK_STUCK_SECS 10
 
-#define GET_ARR_X_Y(x,y) ( (x) + ( (y) * WIDTH ) )
+#define REFRESH_RATE(r) ((long)(1.0/(r)*1000.0))
+#define CHECK_STUCK_SECS 8
+
+#define GET_ARR_X_Y(x,y,w) ( (x) + ( (y) * (w)) )
+
+
+/****************************************************************************************************/
 
 static volatile int keepRunning = 1;
+static int COLOR_LIVE[3][3] = {{0x80, 0, 0}, {0, 0x80, 0}, {0, 0, 0x99}};
+static int COLOR_DEAD[3][3] = {{0, 4, 4}, {4, 0, 4}, {4, 4, 0}};
 
-void intHandler(int dummy) {
-    fprintf(stdout, "Interrupted\n");
+/****************************************************************************************************/
+
+typedef struct p_universe p_universe;
+typedef struct universe_context universe_context;
+typedef int (*func_countNeigh)(universe_context * c, p_universe * u, int x, int y);
+
+struct p_universe {
+  char *cells;
+  p_universe *next;
+};
+
+struct universe_context {
+  int WIDTH;
+  int HEIGHT;
+  int DIVIDER;
+  int TOTAL_CELLS;
+  int FRAME_MS;
+  func_countNeigh FUNC_COUNT_NEIGH;
+  int COLOR_MODE;
+};
+
+
+
+/****************************************************************************************************/
+
+
+void int_handler(int signal) {
+    fprintf(stdout, "Interrupted...\n");
+    
     keepRunning = 0;
-}
-
-void randomize_universe(short *universe) {
-  for(size_t i = 0; i < TOTAL_UNITS; i++)
-    universe[i] = ( rand() % RAND_MOD ) == 0 ;
-}
-
-typedef struct universe_node {
-  short cells[TOTAL_UNITS];
-  struct universe_node *next;
-} universe_node;
-
-short are_universes_cells_same(universe_node * u1, universe_node * u2) {
-  for(int i = 0; i < TOTAL_UNITS; i++)
-  {
-    if( u1->cells[i] != u2->cells[i] )
-      return 0;
-  }
-  return 1;
-}
-
-typedef int (*funcCountNeigh)(universe_node * universe, int x, int y);
-
-int count_cell_neighbours_inf(universe_node * universe, int x, int y) {
-
-  int neigh = 0;
-  
-  for(int yy=y-1, c_y = 3; c_y > 0; yy++, c_y--) {
-
-    if (yy < 0) yy = HEIGHT - 1;
-    else if (yy >= HEIGHT) yy = 0;
-
-    for(int xx=x-1, c_x = 3; c_x > 0; xx++, c_x--) {
-
-      if (xx < 0) xx = WIDTH - 1;
-      else if (xx >= WIDTH) xx = 0;
-
-      if( yy == y && xx == x )
-        continue;
-
-      if( universe->cells[ GET_ARR_X_Y(xx, yy) ] )
-         neigh++;
-
-     // No point on keep counting
-     if( neigh > 3 )
-       return neigh;
-    }
-  }
-
-  return neigh;
-}
-
-
-int count_cell_neighbours(universe_node * universe, int x, int y) {
-
-  int neigh = 0;
-  
-  for(int yy=y-1, c_y = 3; c_y > 0; yy++, c_y--) {
-
-    if (yy < 0 || yy >= HEIGHT)
-      continue;
-
-    for(int xx=x-1, c_x = 3; c_x > 0; xx++, c_x--) {
-
-      if (xx < 0 || xx >= WIDTH )
-        continue;
-
-      if( yy == y && xx == x )
-        continue;
-
-      if( universe->cells[ GET_ARR_X_Y(xx, yy) ] )
-         neigh++;
-
-     // No point on keep counting
-     if( neigh > 3 )
-       return neigh;
-    }
-  }
-
-  return neigh;
 }
 
 long calculate_diff_ms(struct timeval t1, struct timeval t2) {
@@ -121,61 +65,236 @@ long calculate_diff_ms(struct timeval t1, struct timeval t2) {
     + ((t2.tv_usec - t1.tv_usec) / 1000.0 ));   // us to ms
 }
 
-void compute_next_iteration(universe_node * universe, funcCountNeigh countNeigh ) {
+/****************************************************************************************************/
+
+void randomize_universe(p_universe *uni, int uni_cells) {
+  for(int i = 0; i < uni_cells; i++)
+    uni->cells[i] = ( rand() % RAND_MOD ) == 0 ;
+}
+
+p_universe * init_parallel_universes(int total_universes, int uni_cells) {
+  if ( total_universes <= 0 || uni_cells <= 0 )
+    return NULL;
+
+  p_universe *uni, *cur = NULL, *first = NULL;
+
+  for( int i = 0; i < total_universes; i++ ) {
+    uni = malloc(sizeof(p_universe));
+    uni->cells = malloc(uni_cells * sizeof(char));
+
+    randomize_universe(uni, uni_cells);
+
+    if( i == 0 )
+      cur = first = uni;
+    
+    else {
+      cur->next = uni;
+      cur = uni;
+    }
+  }
+
+  return (cur->next = first);
+}
+
+
+void destroy_parallel_universes(p_universe *uni) {
+
+  if( uni == NULL || uni->cells == NULL )
+    return;
+
+  if ( uni->cells != NULL) {
+    free( uni->cells ); 
+    uni->cells = NULL;
+  }
+
+  if ( uni-> next != NULL )
+  {
+    p_universe *next = uni->next;
+    uni->next = NULL;
+
+    destroy_parallel_universes(next);
+  }
+
+  free ( uni );
+}
+
+bool compare_universes_cells(p_universe * u1, p_universe * u2, int uni_cells) {
+  for(int i = 0; i < uni_cells; i++)
+  {
+    if( u1->cells[i] != u2->cells[i] )
+      return false;
+  }
+  return true;
+}
+
+p_universe * init_universes_w_context(universe_context * context) {
+  if ( context == NULL )
+    return NULL;
+
+  return init_parallel_universes(3, context->TOTAL_CELLS);
+}
+
+/****************************************************************************************************/
+
+
+int count_cell_neighbours_scroll(universe_context * context, p_universe * uni, int x, int y) {
+
+  int neigh = 0;
+  
+  for(int yy=y-1, c_y = 3; c_y > 0; yy++, c_y--) {
+
+    if (yy < 0) yy = context->HEIGHT - 1;
+    else if (yy >= context->HEIGHT) yy = 0;
+
+    for(int xx=x-1, c_x = 3; c_x > 0; xx++, c_x--) {
+
+      if (xx < 0) xx = context->WIDTH - 1;
+      else if (xx >= context->WIDTH) xx = 0;
+
+      if( yy == y && xx == x )
+        continue;
+
+      if( uni->cells[ GET_ARR_X_Y(xx, yy, context->WIDTH) ] )
+         neigh++;
+
+     // No point on keep counting
+     if( neigh > 3 )
+       return neigh;
+    }
+  }
+
+  return neigh;
+}
+
+
+int count_cell_neighbours(universe_context * context, p_universe * uni, int x, int y) {
+
+  int neigh = 0;
+  
+  for(int yy=y-1, c_y = 3; c_y > 0; yy++, c_y--) {
+
+    if (yy < 0 || yy >= context->HEIGHT)
+      continue;
+
+    for(int xx=x-1, c_x = 3; c_x > 0; xx++, c_x--) {
+
+      if (xx < 0 || xx >= context->WIDTH )
+        continue;
+
+      if( yy == y && xx == x )
+        continue;
+
+      if( uni->cells[ GET_ARR_X_Y(xx, yy, context->WIDTH) ] )
+         neigh++;
+
+     // No point on keep counting
+     if( neigh > 3 )
+       return neigh;
+    }
+  }
+
+  return neigh;
+}
+
+void compute_next_iteration(universe_context * context, p_universe * uni ) {
 
   int liveNeigh;
   int curPos;
-  for( int y = 0; y < HEIGHT; y++ ) {
-    for( int x = 0; x < WIDTH; x++ ) {
+  for( int y = 0; y < context->HEIGHT; y++ ) {
+    for( int x = 0; x < context->WIDTH; x++ ) {
 
-      curPos = GET_ARR_X_Y(x, y);
-      liveNeigh = (*countNeigh)(universe, x, y);
+      curPos = GET_ARR_X_Y(x, y, context->WIDTH);
+      liveNeigh = (*context->FUNC_COUNT_NEIGH)(context, uni, x, y);
     
       // Current cell is alive
-      if( universe->cells[ curPos ] )
+      if( uni->cells[ curPos ] )
         // Stay alive only if exactly 2 or 3 neighbours are also alive
-        universe->next->cells[ curPos ] = ( liveNeigh == 2 || liveNeigh == 3 ) ;
+        uni->next->cells[ curPos ] = ( liveNeigh == 2 || liveNeigh == 3 ) ;
 
       // Current cell is dead
       else
         // Become alive if exactly 3 neighbours are alive
-        universe->next->cells[ curPos ] = liveNeigh == 3;
+        uni->next->cells[ curPos ] = liveNeigh == 3;
     }
   }
 }
 
+void init_context(universe_context * context, int divider, int fr, func_countNeigh fCountNeigh, int color_mode) {
+  if ( context == NULL )
+    return;
 
+  if ( divider < 1 )
+    divider = 1;
+
+  context->WIDTH = (int)(PANEL_W/divider);
+  context->HEIGHT = (int)(PANEL_H/divider);
+  context->DIVIDER = divider;
+  context->TOTAL_CELLS = context->WIDTH * context->HEIGHT;
+  context->FRAME_MS = REFRESH_RATE(fr);
+  context->FUNC_COUNT_NEIGH = fCountNeigh;
+  context->COLOR_MODE = color_mode;
+}
+void init_rand_context(universe_context * context) {
+  int dividers[] = {1, 2, 4};
+  int frs[] = { 10, 15, 20, 30, 60};
+  func_countNeigh counters[] = {count_cell_neighbours_scroll, count_cell_neighbours};
+
+  init_context(context,
+    dividers[ rand() % 3 ],
+    frs[ rand() % 5 ],
+    counters[rand() % 2],
+    rand() % 3
+  );
+}
+
+/****************************************************************************************************/
+
+
+void clean_shutdown(p_universe *uni, struct RGBLedMatrix *matrix) {
+  if ( uni != NULL )
+    destroy_parallel_universes(uni);
+
+  if ( matrix != NULL )
+    led_matrix_delete(matrix);
+}
 
 int main(int argc, char **argv) {
 
   struct RGBLedMatrixOptions options;
   struct RGBLedMatrix *matrix;
   struct LedCanvas *offscreen_canvas;
-  int width, height;
-  int x, y; 
-
-  universe_node u1,u2,u3;
-  u1.next = &u2;
-  u2.next = &u3;
-  u3.next = &u1;
   
-  universe_node *curUniverse = &u1;
+  universe_context context;
+  p_universe *universe;
+
+  int width, height;
+  int x, y;
 
   struct timeval now, before, last_stuck_check;
-  uint8_t c;
   time_t t;
   long sleepDiff;
 
+  // trap SIGINT to do cleanup
+  signal(SIGINT, int_handler);
+  
   // seed rng
   srand((unsigned) time(&t));
 
-  // trap SIGINT to do cleanup
-  signal(SIGINT, intHandler);
+  // initialize context
+  init_rand_context(&context);
+
+  // initialize universes
+  universe = init_universes_w_context(&context);
+  if ( universe == NULL ) {
+    fprintf(stderr, "Error initializing universes. Aborting...\n");
+    return 1;
+  }
 
   memset(&options, 0, sizeof(options));
   
   gettimeofday(&last_stuck_check, 0);
 
+  // initialize panel options
   options.rows = PANEL_H;
   options.cols = PANEL_W;
   options.brightness = 40;
@@ -183,10 +302,13 @@ int main(int argc, char **argv) {
   options.hardware_mapping = "adafruit-hat-pwm";
 
 
-  /* This supports all the led commandline options. Try --led-help */
+  // This supports all the led commandline options. Try --led-help
   matrix = led_matrix_create_from_options(&options, &argc, &argv);
-  if (matrix == NULL)
+  if (matrix == NULL) {
+    fprintf(stderr, "Error initializing led matrix. Aborting...\n");
+    clean_shutdown(universe, NULL);
     return 1;
+  }
   
   // Create double buffer
   offscreen_canvas = led_matrix_create_offscreen_canvas(matrix);
@@ -194,50 +316,54 @@ int main(int argc, char **argv) {
 
   fprintf(stderr, "Size: %dx%d. Hardware gpio mapping: %s\n", width, height, options.hardware_mapping);
 
-  if ( width != PANEL_W || height != PANEL_H )
+  if ( width != PANEL_W || height != PANEL_H ) {
     fprintf(stderr, "Rows and Cols do no match width and height. Aborting...\n");
+    clean_shutdown(universe, matrix);
+    return 1;
+  }
 
-  else {
+  // Start loop
+  while (keepRunning) {
 
-    randomize_universe(curUniverse->cells);
+    gettimeofday(&before, 0);
 
-    // Start loop
-    while (keepRunning) {
+    if ( calculate_diff_ms(last_stuck_check, before) >= ( CHECK_STUCK_SECS * 1000 ) ) {
+      last_stuck_check = before;
 
-      gettimeofday(&before, 0);
-
-      if ( calculate_diff_ms(last_stuck_check, before) >= ( CHECK_STUCK_SECS * 1000 ) ) {
-        last_stuck_check = before;
-
-        if ( are_universes_cells_same( curUniverse, curUniverse->next ) )
-          randomize_universe(curUniverse->cells);
-     }
-
-      for (y = 0; y < PANEL_H; y++) {
-        for (x = 0; x < PANEL_W; x++) {
-
-          c = curUniverse->cells[ GET_ARR_X_Y( (int)(x/PANEL_DIV), (int)(y/PANEL_DIV) ) ] ? 0x60 : 0x00 ;
-          led_canvas_set_pixel(offscreen_canvas, x, y, 5, c , 5);
-        }
+      if ( compare_universes_cells( universe, universe->next, context.TOTAL_CELLS ) ) {
+        destroy_parallel_universes(universe);
+        init_rand_context(&context);
+        universe = init_universes_w_context(&context);
       }
-
-      offscreen_canvas = led_matrix_swap_on_vsync(matrix, offscreen_canvas);
-
-      // Compute next universe iteration
-
-      compute_next_iteration(curUniverse, &count_cell_neighbours_inf);
-      curUniverse = curUniverse->next;
-
-      gettimeofday(&now, 0);
-      sleepDiff = SLEEP_MS - calculate_diff_ms(before, now);
-
-      if( sleepDiff > 0 )
-        usleep(sleepDiff * 1000);
     }
+
+    for (y = 0; y < PANEL_H; y++) {
+      for (x = 0; x < PANEL_W; x++) {
+
+        if( universe->cells[ GET_ARR_X_Y( (int)(x/context.DIVIDER), (int)(y/context.DIVIDER), context.WIDTH ) ] )
+          led_canvas_set_pixel(offscreen_canvas, x, y, COLOR_LIVE[context.COLOR_MODE][0], COLOR_LIVE[context.COLOR_MODE][1], COLOR_LIVE[context.COLOR_MODE][2]);
+        else
+          led_canvas_set_pixel(offscreen_canvas, x, y, COLOR_DEAD[context.COLOR_MODE][0], COLOR_DEAD[context.COLOR_MODE][1], COLOR_DEAD[context.COLOR_MODE][2]);
+      }
+    }
+
+    offscreen_canvas = led_matrix_swap_on_vsync(matrix, offscreen_canvas);
+
+    // Compute next universe iteration
+
+    compute_next_iteration(&context, universe);
+    universe = universe->next;
+
+    gettimeofday(&now, 0);
+    sleepDiff = context.FRAME_MS - calculate_diff_ms(before, now);
+
+    if( sleepDiff > 0 )
+      usleep(sleepDiff * 1000);
   }
 
   // Cleanup
-  led_matrix_delete(matrix);
+  clean_shutdown(universe, matrix);
 
   return 0;
 }
+
