@@ -16,7 +16,7 @@
 #define RAND_MOD 3
 
 #define REFRESH_RATE(r) ((long)(1.0/(r)*1000.0))
-#define CHECK_STUCK_SECS 8
+#define CHECK_STUCK_SECS ( 8 * 1000 )
 
 #define GET_ARR_X_Y(x,y,w) ( (x) + ( (y) * (w)) )
 
@@ -26,6 +26,7 @@
 static volatile int keepRunning = 1;
 static int COLOR_LIVE[3][3] = {{0x80, 0, 0}, {0, 0x80, 0}, {0, 0, 0x99}};
 static int COLOR_DEAD[3][3] = {{0, 4, 4}, {4, 0, 4}, {4, 4, 0}};
+
 
 /****************************************************************************************************/
 
@@ -46,12 +47,11 @@ struct universe_context {
   int FRAME_MS;
   func_countNeigh FUNC_COUNT_NEIGH;
   int COLOR_MODE;
+  int RESET_AFTER_MS;
 };
 
 
-
 /****************************************************************************************************/
-
 
 void int_handler(int signal) {
     fprintf(stdout, "Interrupted...\n");
@@ -64,6 +64,11 @@ long calculate_diff_ms(struct timeval t1, struct timeval t2) {
       (( t2.tv_sec - t1.tv_sec) * 1000.0 )      // sec to ms
     + ((t2.tv_usec - t1.tv_usec) / 1000.0 ));   // us to ms
 }
+
+int mod(int x,int N){
+    return (x % N + N) % N;
+}
+
 
 /****************************************************************************************************/
 
@@ -134,22 +139,16 @@ p_universe * init_universes_w_context(universe_context * context) {
   return init_parallel_universes(3, context->TOTAL_CELLS);
 }
 
-/****************************************************************************************************/
 
+/****************************************************************************************************/
 
 int count_cell_neighbours_scroll(universe_context * context, p_universe * uni, int x, int y) {
 
   int neigh = 0;
   
-  for(int yy=y-1, c_y = 3; c_y > 0; yy++, c_y--) {
+  for(int yy = mod( y-1, context->HEIGHT ), c_y = 0; c_y < 3; yy = ( yy+1 ) % context->HEIGHT, c_y++) {
 
-    if (yy < 0) yy = context->HEIGHT - 1;
-    else if (yy >= context->HEIGHT) yy = 0;
-
-    for(int xx=x-1, c_x = 3; c_x > 0; xx++, c_x--) {
-
-      if (xx < 0) xx = context->WIDTH - 1;
-      else if (xx >= context->WIDTH) xx = 0;
+    for(int xx = mod( x-1, context->WIDTH ), c_x = 0; c_x < 3; xx = ( xx+1 ) % context->WIDTH, c_x++) {
 
       if( yy == y && xx == x )
         continue;
@@ -157,7 +156,7 @@ int count_cell_neighbours_scroll(universe_context * context, p_universe * uni, i
       if( uni->cells[ GET_ARR_X_Y(xx, yy, context->WIDTH) ] )
          neigh++;
 
-     // No point on keep counting
+     // No point on keep counting greather than 3 neighbours
      if( neigh > 3 )
        return neigh;
     }
@@ -166,20 +165,20 @@ int count_cell_neighbours_scroll(universe_context * context, p_universe * uni, i
   return neigh;
 }
 
-
 int count_cell_neighbours(universe_context * context, p_universe * uni, int x, int y) {
 
   int neigh = 0;
+  int yy = y-1, yMax = y+1,
+      xStart = x-1, xMax = x+1;
+
+  if( yy < 0 ) yy = 0;
+  else if( yMax >= context->HEIGHT ) yMax = y;
+
+  if( xStart < 0 ) xStart = 0;
+  else if( xMax >= context->WIDTH ) xMax = x;
   
-  for(int yy=y-1, c_y = 3; c_y > 0; yy++, c_y--) {
-
-    if (yy < 0 || yy >= context->HEIGHT)
-      continue;
-
-    for(int xx=x-1, c_x = 3; c_x > 0; xx++, c_x--) {
-
-      if (xx < 0 || xx >= context->WIDTH )
-        continue;
+  for(; yy <= yMax; yy++) {
+    for(int xx = xStart; xx <= xMax; xx++) {
 
       if( yy == y && xx == x )
         continue;
@@ -187,7 +186,7 @@ int count_cell_neighbours(universe_context * context, p_universe * uni, int x, i
       if( uni->cells[ GET_ARR_X_Y(xx, yy, context->WIDTH) ] )
          neigh++;
 
-     // No point on keep counting
+     // No point on keep counting greather than 3 neighbours
      if( neigh > 3 )
        return neigh;
     }
@@ -219,7 +218,10 @@ void compute_next_iteration(universe_context * context, p_universe * uni ) {
   }
 }
 
-void init_context(universe_context * context, int divider, int fr, func_countNeigh fCountNeigh, int color_mode) {
+
+/****************************************************************************************************/
+
+void init_context(universe_context * context, int divider, int fr, func_countNeigh fCountNeigh, int color_mode, int reset_after_s) {
   if ( context == NULL )
     return;
 
@@ -233,22 +235,26 @@ void init_context(universe_context * context, int divider, int fr, func_countNei
   context->FRAME_MS = REFRESH_RATE(fr);
   context->FUNC_COUNT_NEIGH = fCountNeigh;
   context->COLOR_MODE = color_mode;
+  context->RESET_AFTER_MS = reset_after_s * 1000;
 }
 void init_rand_context(universe_context * context) {
-  int dividers[] = {1, 2, 4};
-  int frs[] = { 10, 15, 20, 30, 60};
-  func_countNeigh counters[] = {count_cell_neighbours_scroll, count_cell_neighbours};
+  int dividers[] = { 1, 2, 4 };
+  int frs[] = { 10, 20, 30};
+  func_countNeigh counters[] = { count_cell_neighbours_scroll, count_cell_neighbours };
+
+  int div = dividers[ rand() % 3 ];
 
   init_context(context,
-    dividers[ rand() % 3 ],
-    frs[ rand() % 5 ],
-    counters[rand() % 2],
-    rand() % 3
+    div,
+    frs[ rand() % 3 ],
+    counters[ rand() % 2 ],
+    rand() % 3,
+    (int)( 180 / div )
   );
 }
 
-/****************************************************************************************************/
 
+/****************************************************************************************************/
 
 void clean_shutdown(p_universe *uni, struct RGBLedMatrix *matrix) {
   if ( uni != NULL )
@@ -270,9 +276,10 @@ int main(int argc, char **argv) {
   int width, height;
   int x, y;
 
-  struct timeval now, before, last_stuck_check;
+  struct timeval now, before, last_stuck_check, last_reset;
   time_t t;
   long sleepDiff;
+  bool reset_context = false;
 
   // trap SIGINT to do cleanup
   signal(SIGINT, int_handler);
@@ -293,13 +300,15 @@ int main(int argc, char **argv) {
   memset(&options, 0, sizeof(options));
   
   gettimeofday(&last_stuck_check, 0);
+  last_reset = last_stuck_check;
 
   // initialize panel options
   options.rows = PANEL_H;
   options.cols = PANEL_W;
-  options.brightness = 40;
+  options.brightness = 50;
   options.chain_length = 1;
   options.hardware_mapping = "adafruit-hat-pwm";
+//  options.limit_refresh_rate_hz = 60;
 
 
   // This supports all the led commandline options. Try --led-help
@@ -327,14 +336,25 @@ int main(int argc, char **argv) {
 
     gettimeofday(&before, 0);
 
-    if ( calculate_diff_ms(last_stuck_check, before) >= ( CHECK_STUCK_SECS * 1000 ) ) {
-      last_stuck_check = before;
+    if ( calculate_diff_ms(last_reset, before) >= context.RESET_AFTER_MS )
+      reset_context = true;
 
-      if ( compare_universes_cells( universe, universe->next, context.TOTAL_CELLS ) ) {
-        destroy_parallel_universes(universe);
-        init_rand_context(&context);
-        universe = init_universes_w_context(&context);
-      }
+    else if( calculate_diff_ms(last_stuck_check, before) >= CHECK_STUCK_SECS )
+    {
+      if ( compare_universes_cells( universe, universe->next, context.TOTAL_CELLS ) )
+        reset_context = true;
+      else
+        last_stuck_check = before;
+    }
+
+    if ( reset_context ) {
+      reset_context = false;
+
+      last_stuck_check = before;
+      last_reset = before;
+      destroy_parallel_universes(universe);
+      init_rand_context(&context);
+      universe = init_universes_w_context(&context);
     }
 
     for (y = 0; y < PANEL_H; y++) {
