@@ -85,7 +85,7 @@ p_universe * init_parallel_universes(int total_universes, int uni_cells) {
 
   for( int i = 0; i < total_universes; i++ ) {
     uni = malloc(sizeof(p_universe));
-    uni->cells = malloc(uni_cells * sizeof(char));
+    uni->cells = malloc((PANEL_W * PANEL_H) * sizeof(char));
 
     randomize_universe(uni, uni_cells);
 
@@ -352,9 +352,10 @@ int main(int argc, char **argv) {
 
       last_stuck_check = before;
       last_reset = before;
-      destroy_parallel_universes(universe);
+      //destroy_parallel_universes(universe);
       init_rand_context(&context);
-      universe = init_universes_w_context(&context);
+      //universe = init_universes_w_context(&context);
+      randomize_universe(universe, context.TOTAL_CELLS);
     }
 
     for (y = 0; y < PANEL_H; y++) {
@@ -386,4 +387,5 @@ int main(int argc, char **argv) {
 
   return 0;
 }
+
 
