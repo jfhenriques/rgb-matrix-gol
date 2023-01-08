@@ -17,25 +17,25 @@ HARDWARE_DESC=adafruit-hat-pwm
 all : $(BINARIES)
 
 $(RGB_LIBRARY): FORCE
-        HARDWARE_DESC=$(HARDWARE_DESC) $(MAKE) -C $(RGB_LIBDIR)
+	HARDWARE_DESC=$(HARDWARE_DESC) $(MAKE) -C $(RGB_LIBDIR)
 
 gol : gol.o
 
 # All the binaries that have the same name as the object file.q
 % : %.o $(RGB_LIBRARY)
-        $(CXX) $< -o $@ $(LDFLAGS)
+	$(CXX) $< -o $@ $(LDFLAGS)
 
 
 # Since the C example uses the C++ library underneath, which depends on C++
 # runtime stuff, you still have to also link -lstdc++
 gol : gol.o $(RGB_LIBRARY)
-        $(CC) $< -o $@ $(LDFLAGS) -lstdc++
+	$(CC) $< -o $@ $(LDFLAGS) -lstdc++
 
 %.o : %.c
-        $(CC) -I$(RGB_INCDIR) $(CFLAGS) -c -o $@ $<
+	$(CC) -I$(RGB_INCDIR) $(CFLAGS) -c -o $@ $<
 
 clean:
-        rm -f $(OBJECTS) $(BINARIES)
+	rm -f $(OBJECTS) $(BINARIES)
 
 FORCE:
 .PHONY: FORCE
